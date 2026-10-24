@@ -7,6 +7,7 @@ import pytest
 from blinkit_mcp.errors import BlinkitError
 from blinkit_mcp.parsers import (
     filter_results,
+    parse_product,
     parse_price,
     parse_search_page,
     product_url,
@@ -116,3 +117,44 @@ def test_found_status():
 def test_product_url():
     assert product_url("329500", "Amul Fresh Malai Paneer") == "https://blinkit.com/prn/amul-fresh-malai-paneer/prid/329500"
     assert product_url("1", "Let's Try Jowar (Millet) Cookies") == "https://blinkit.com/prn/let-s-try-jowar-millet-cookies/prid/1"
+
+
+def test_product_329500():
+    d = parse_product(load("product_329500.json"))
+    p = d.product
+    assert (p.product_id, p.name, p.brand, p.pack_size) == ("329500", "Amul Fresh Malai Paneer", "Amul", "200 g")
+    assert (p.price, p.mrp, p.discount_pct, p.inventory, p.in_stock) == (95.0, 95.0, 0, 5, True)
+    assert p.merchant_id == "43483"
+    assert p.sponsored is False and p.product_type is None
+    assert p.url == "https://blinkit.com/prn/amul-fresh-malai-paneer/prid/329500"
+    assert len(d.images) == 3
+    assert d.images[0] == "https://cdn.grofers.com/da/cms-assets/cms/product/98064289-82ca-42ea-a64e-f9465af3c391.jpg"
+    assert p.image_url == d.images[0]
+    assert len(d.attributes) == 26
+    assert d.attributes["Protein Per 100 g"] == "20 g"
+    assert d.attributes["Energy Per 100 g"] == "312 kcal"
+    assert d.attributes["Shelf Life"] == "45 days"
+    assert d.attributes["FSSAI License"] == "10012021000071"
+    assert "Packaging Type" not in d.attributes
+
+
+def test_product_unstocked():
+    p = parse_product(load("product_unstocked.json")).product
+    assert p.name == "Amul Fresh Malai Paneer"
+    assert p.in_stock is False and p.inventory == 0
+    assert p.price is None and p.mrp is None
+
+
+def test_product_without_atc_strip_uses_unit():
+    data = load("product_329500.json")
+    data["response"]["snippets"] = [s for s in data["response"]["snippets"] if s["widget_type"] != "product_atc_strip"]
+    p = parse_product(data).product
+    assert p.pack_size == "200 g"
+
+
+def test_product_missing_seo_is_upstream_changed():
+    data = load("product_329500.json")
+    del data["response"]["tracking"]["le_meta"]["custom_data"]["seo"]
+    with pytest.raises(BlinkitError) as e:
+        parse_product(data)
+    assert e.value.code == "upstream_changed"

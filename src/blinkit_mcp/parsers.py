@@ -8,9 +8,11 @@ import math
 import re
 
 from .errors import UPSTREAM_CHANGED, BlinkitError
-from .models import Product, SearchPage
+from .models import Product, ProductDetail, SearchPage
 
 PRODUCT_CARD = "product_card_snippet_type_2"
+ATC_STRIP = "product_atc_strip"
+SHOWN = "shown_to_customer"
 FOUND, ALL_SOLD_OUT, NO_MATCH = "found", "all_sold_out", "no_match"
 
 
@@ -99,3 +101,49 @@ def search_status(kept: list[Product]) -> str:
     if not any(p.in_stock for p in kept):
         return ALL_SOLD_OUT
     return FOUND
+
+
+def _atc_merchant_id(atc: dict) -> str | None:
+    meta = atc.get("meta") or {}
+    if meta.get("merchant_id") is not None:
+        return str(meta["merchant_id"])
+    for action in (atc.get("rfc_actions_v2") or {}).get("default") or []:
+        item = ((action or {}).get("remove_from_cart") or {}).get("cart_item") or {}
+        if item.get("merchant_id") is not None:
+            return str(item["merchant_id"])
+    return None
+
+
+def parse_product(data: dict) -> ProductDetail:
+    snippets = _response(data, "snippets")
+    custom = data["response"].get("tracking", {}).get("le_meta", {}).get("custom_data", {})
+    seo = custom.get("seo")
+    if not isinstance(seo, dict) or "id" not in seo:
+        raise BlinkitError(UPSTREAM_CHANGED, "Blinkit product response has no seo block")
+    attributes = {a["name"]: str(a["value"]) for a in seo.get("attributes") or [] if a.get("type") == SHOWN}
+    atc = next((s["data"] for s in snippets if s.get("widget_type") == ATC_STRIP), {})
+    product_id = str(seo["id"])
+    name = seo.get("product_name") or ""
+    # Blinkit reports price 0 when no store near the location stocks the item.
+    price = float(seo["price"]) if seo.get("price") else None
+    mrp = float(seo["mrp"]) if seo.get("mrp") else price
+    inventory = seo.get("inventory", atc.get("inventory"))
+    images = list(seo.get("images") or [])
+    product = Product(
+        product_id=product_id,
+        name=name,
+        brand=seo.get("brand") or None,
+        pack_size=_text(atc.get("variant")) or attributes.get("Unit"),
+        price=price,
+        mrp=mrp,
+        discount_pct=discount_pct(price, mrp),
+        in_stock=not atc.get("is_sold_out", False) and bool(inventory),
+        inventory=inventory,
+        image_url=images[0] if images else None,
+        url=product_url(product_id, name),
+        product_type=None,
+        sponsored=False,
+        matches_query=False,
+        merchant_id=_atc_merchant_id(atc),
+    )
+    return ProductDetail(product=product, images=images, attributes=attributes)
