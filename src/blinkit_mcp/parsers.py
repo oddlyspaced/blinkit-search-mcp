@@ -4,6 +4,7 @@ This is the only module that knows Blinkit's response formats. See section 7
 of docs/superpowers/specs/2026-10-24-blinkit-mcp-design.md.
 """
 
+import functools
 import math
 import re
 
@@ -40,6 +41,29 @@ def _text(obj) -> str | None:
     return obj or None
 
 
+def _shape_errors(fn):
+    """Report missing or wrongly typed fields as upstream_changed."""
+
+    @functools.wraps(fn)
+    def wrapper(data):
+        try:
+            return fn(data)
+        except (KeyError, TypeError, AttributeError, IndexError, ValueError) as exc:
+            raise BlinkitError(UPSTREAM_CHANGED, f"Blinkit response format changed ({type(exc).__name__}: {exc})")
+
+    return wrapper
+
+
+def _is_query_match(reason: str) -> bool:
+    """Blinkit's match reason. Popular-item filler has only qtp_products* tokens.
+
+    Real matches can also carry qtp_products_injected, so only an all-filler
+    reason counts as no match. An unknown reason counts as a match.
+    """
+    tokens = [t for t in reason.split(",") if t]
+    return not tokens or not all(t.startswith("qtp_products") for t in tokens)
+
+
 def _response(data: dict, key: str):
     try:
         return data["response"][key]
@@ -49,7 +73,7 @@ def _response(data: dict, key: str):
 
 def parse_card(snippet: dict) -> Product:
     d = snippet["data"]
-    attrs = snippet.get("tracking", {}).get("common_attributes", {})
+    attrs = (snippet.get("tracking") or {}).get("common_attributes") or {}
     product_id = str(d["product_id"])
     name = _text(d.get("name")) or _text(d.get("display_name")) or ""
     price = parse_price(_text(d.get("normal_price")))
@@ -70,14 +94,15 @@ def parse_card(snippet: dict) -> Product:
         url=product_url(product_id, name),
         product_type=attrs.get("ptype") or None,
         sponsored=sponsored,
-        matches_query=not sponsored and "match" in (attrs.get("reason") or ""),
+        matches_query=not sponsored and _is_query_match(attrs.get("reason") or ""),
         merchant_id=str(d["merchant_id"]) if d.get("merchant_id") is not None else None,
     )
 
 
+@_shape_errors
 def parse_search_page(data: dict) -> SearchPage:
     snippets = _response(data, "snippets")
-    custom = data["response"].get("tracking", {}).get("le_meta", {}).get("custom_data", {})
+    custom = ((data["response"].get("tracking") or {}).get("le_meta") or {}).get("custom_data") or {}
     return SearchPage(
         products=[parse_card(s) for s in snippets if s.get("widget_type") == PRODUCT_CARD],
         actual_query=custom.get("search_actual_keyword") or None,
@@ -114,9 +139,13 @@ def _atc_merchant_id(atc: dict) -> str | None:
     return None
 
 
+@_shape_errors
 def parse_product(data: dict) -> ProductDetail:
-    snippets = _response(data, "snippets")
-    custom = data["response"].get("tracking", {}).get("le_meta", {}).get("custom_data", {})
+    custom = (((data.get("response") or {}).get("tracking") or {}).get("le_meta") or {}).get("custom_data") or {}
+    if "seo" in custom and custom["seo"] is None:
+        # Unknown product id: is_success=false, snippets=null, seo=null.
+        raise BlinkitError(NOT_FOUND, "Blinkit has no product with this id")
+    snippets = _response(data, "snippets") or []
     seo = custom.get("seo")
     if not isinstance(seo, dict) or "id" not in seo:
         raise BlinkitError(UPSTREAM_CHANGED, "Blinkit product response has no seo block")

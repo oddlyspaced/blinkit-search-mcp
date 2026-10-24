@@ -144,3 +144,26 @@ def test_400_location_not_serviceable():
     with pytest.raises(BlinkitError) as e:
         client.search("milk", 33.5, 79.0)
     assert e.value.code == "not_serviceable"
+
+
+def test_rate_limit_holds_across_threads():
+    import threading
+    import time as _time
+
+    sent = []
+
+    class SlowSession:
+        def request(self, method, url, **kwargs):
+            sent.append(_time.monotonic())
+            _time.sleep(0.01)
+            return FakeResponse()
+
+    client = BlinkitClient(session=SlowSession(), min_interval=0.1)
+    threads = [threading.Thread(target=client.search, args=("x", LAT, LON)) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    sent.sort()
+    gaps = [b - a for a, b in zip(sent, sent[1:])]
+    assert len(sent) == 4 and min(gaps) >= 0.095

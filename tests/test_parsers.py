@@ -158,3 +158,64 @@ def test_product_missing_seo_is_upstream_changed():
     with pytest.raises(BlinkitError) as e:
         parse_product(data)
     assert e.value.code == "upstream_changed"
+
+
+# --- final review fixes -------------------------------------------------------
+
+
+def test_missing_product_is_not_found():
+    with pytest.raises(BlinkitError) as e:
+        parse_product(load("product_missing.json"))
+    assert e.value.code == "not_found"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d["response"]["snippets"].__setitem__(1, {"widget_type": "product_card_snippet_type_2"}),
+        lambda d: d["response"]["snippets"][1]["data"].pop("product_id"),
+        lambda d: d["response"]["snippets"][1].__setitem__("tracking", None),
+        lambda d: d["response"].__setitem__("tracking", None),
+    ],
+)
+def test_malformed_search_card_is_upstream_changed(mutate):
+    data = load("search_paneer_p1.json")
+    mutate(data)
+    try:
+        parse_search_page(data)
+    except BlinkitError as e:
+        assert e.code == "upstream_changed"
+
+
+def test_malformed_search_card_raises_only_blinkit_error():
+    data = load("search_paneer_p1.json")
+    data["response"]["snippets"][1]["data"].pop("product_id")
+    with pytest.raises(BlinkitError) as e:
+        parse_search_page(data)
+    assert e.value.code == "upstream_changed"
+
+
+def test_malformed_product_is_upstream_changed():
+    data = load("product_329500.json")
+    data["response"]["tracking"]["le_meta"]["custom_data"]["seo"]["attributes"] = [{"type": "shown_to_customer"}]
+    with pytest.raises(BlinkitError) as e:
+        parse_product(data)
+    assert e.value.code == "upstream_changed"
+
+
+@pytest.mark.parametrize(
+    "reason, expected",
+    [
+        ("keyterm|match|paneer,text_match,within_category", True),
+        ("generated_tags|paneer::cottage cheese", True),
+        ("keyterm|match|milk,qtp_products_injected,text_match", True),
+        ("some_future_reason", True),
+        ("qtp_products", False),
+        ("qtp_products,qtp_products_trending", False),
+    ],
+)
+def test_match_reason_rule(reason, expected):
+    data = load("search_paneer_p1.json")
+    card = next(s for s in data["response"]["snippets"] if s["data"].get("product_id") == "329500")
+    card["tracking"]["common_attributes"]["reason"] = reason
+    assert by_id(parse_search_page(data), "329500").matches_query is expected

@@ -7,6 +7,7 @@ BlinkitError codes.
 """
 
 import json
+import threading
 import time
 from urllib.parse import urlencode
 
@@ -31,15 +32,19 @@ class BlinkitClient:
         self._sleep = sleep
         self._clock = clock
         self._last = None
+        # MCPServer runs sync tools in worker threads; one lock keeps the
+        # spacing between requests and the one-time warm-up correct.
+        self._lock = threading.RLock()
 
     @property
     def session(self):
-        if self._session is None:
-            self._session = _default_session()
-        if not self._warmed:
-            self._warmed = True
-            self._send("GET", BASE_URL + "/", {}, None, None)
-        return self._session
+        with self._lock:
+            if self._session is None:
+                self._session = _default_session()
+            if not self._warmed:
+                self._warmed = True
+                self._send("GET", BASE_URL + "/", {}, None, None)
+            return self._session
 
     def search(self, query: str, lat: float, lon: float, next_url: str | None = None) -> dict:
         if next_url:
@@ -49,7 +54,9 @@ class BlinkitClient:
         return self._api("POST", url, lat, lon)
 
     def product(self, product_id: str, lat: float, lon: float) -> dict:
-        return self._api("POST", f"{BASE_URL}/v1/layout/product/{product_id}", lat, lon)
+        # An unknown id returns is_success=false; parse_product reports not_found.
+        resp = self._request("POST", f"{BASE_URL}/v1/layout/product/{product_id}", self._headers(lat, lon), {}, None)
+        return self._decode(resp, require_success=False)
 
     def get_json(self, path: str, params: dict, lat: float | None = None, lon: float | None = None) -> dict:
         resp = self._request("GET", BASE_URL + path, self._headers(lat, lon), None, params)
@@ -94,16 +101,17 @@ class BlinkitClient:
 
     def _send(self, method, url, headers, body, params, session=None):
         session = session or self._session
-        if self._last is not None:
-            wait = self.min_interval - (self._clock() - self._last)
-            if wait > 0:
-                self._sleep(wait)
-        try:
-            return session.request(method, url, headers=headers, json=body, params=params, timeout=TIMEOUT)
-        except Exception as exc:  # curl_cffi raises its own error types
-            raise BlinkitError(NETWORK, f"request to {url} failed: {exc}") from exc
-        finally:
-            self._last = self._clock()
+        with self._lock:
+            if self._last is not None:
+                wait = self.min_interval - (self._clock() - self._last)
+                if wait > 0:
+                    self._sleep(wait)
+            try:
+                return session.request(method, url, headers=headers, json=body, params=params, timeout=TIMEOUT)
+            except Exception as exc:  # curl_cffi raises its own error types
+                raise BlinkitError(NETWORK, f"request to {url} failed: {exc}") from exc
+            finally:
+                self._last = self._clock()
 
     @staticmethod
     def _decode(resp, require_success: bool) -> dict:

@@ -300,3 +300,57 @@ def test_view_images_needs_exactly_one_source(fake):
 async def test_tools_are_registered():
     names = {t.name for t in await server.mcp.list_tools()}
     assert names == {"set_location", "get_location", "search_products", "get_product", "view_images"}
+
+
+# --- final review fixes -------------------------------------------------------
+
+
+def test_search_limit_one_with_ad_first_is_found(fake):
+    save_location(GURUGRAM)
+    fake(searches=[load("search_milk_gurugram.json")])
+    out = server.search_products("milk", limit=1)
+    assert out["status"] == "found"
+    assert out["count"] == 1
+    assert out["products"][0]["matches_query"] is True
+
+
+def test_search_fills_limit_with_matches_before_ads(fake):
+    save_location(GURUGRAM)
+    fake(searches=[load("search_paneer_p1.json")])
+    out = server.search_products("paneer", limit=3)
+    assert all(p["matches_query"] for p in out["products"])
+
+
+def test_get_product_unstocked_has_note(fake):
+    save_location(GURUGRAM)
+    fake(product=load("product_unstocked.json"))
+    out = server.get_product("329500")
+    assert out["product"]["in_stock"] is False
+    assert "not" in out["note"].lower() and "price" in out["note"].lower()
+
+
+def test_get_product_missing_is_not_found(fake):
+    save_location(GURUGRAM)
+    fake(product=load("product_missing.json"))
+    assert server.get_product("999999999")["status"] == "not_found"
+
+
+def test_get_client_is_shared_across_threads(monkeypatch):
+    import threading
+    import time as _time
+
+    created = []
+
+    class SlowClient:
+        def __init__(self):
+            _time.sleep(0.05)
+            created.append(self)
+
+    monkeypatch.setattr(server, "_client", None)
+    monkeypatch.setattr(server, "BlinkitClient", SlowClient)
+    threads = [threading.Thread(target=server.get_client) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(created) == 1

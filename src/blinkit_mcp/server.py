@@ -3,6 +3,7 @@
 import functools
 import json
 import re
+import threading
 from dataclasses import asdict
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -29,13 +30,15 @@ mcp = MCPServer(
 )
 
 _client: BlinkitClient | None = None
+_client_lock = threading.Lock()
 
 
 def get_client():
     global _client
-    if _client is None:
-        _client = BlinkitClient()
-    return _client
+    with _client_lock:
+        if _client is None:
+            _client = BlinkitClient()
+        return _client
 
 
 def _fail(err: BlinkitError) -> dict:
@@ -164,10 +167,9 @@ def search_products(query: str, limit: int = 10, lat: float | None = None, lon: 
         if len(kept) >= limit or not next_url:
             break
 
-    kept = kept[:limit]
     status = search_status(kept)
-    if status == NO_MATCH:
-        kept = []
+    # Matches first, then relevant ads, so ads never push out real results.
+    kept = sorted(kept, key=lambda p: not p.matches_query)[:limit] if status != NO_MATCH else []
     merchant_id = next((p.merchant_id for p in cards.values() if p.merchant_id), None)
     out = {
         "status": status,
@@ -194,13 +196,19 @@ def get_product(product_id: str, lat: float | None = None, lon: float | None = N
     loc, is_saved = _location(lat, lon)
     detail = parse_product(get_client().product(product_id, loc.lat, loc.lon))
     product = {k: v for k, v in _product_dict(detail.product).items() if k not in DETAIL_ONLY_FIELDS}
-    return {
+    out = {
         "status": "ok",
         **_location_info(loc, detail.product.merchant_id, is_saved),
         "product": product,
         "images": detail.images,
         "attributes": detail.attributes,
     }
+    if not detail.product.in_stock:
+        out["note"] = (
+            "Not in stock at this location's store."
+            + (" Blinkit gives no price for it here." if detail.product.price is None else "")
+        )
+    return out
 
 
 @mcp.tool(structured_output=False)
