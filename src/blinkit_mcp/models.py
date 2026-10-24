@@ -36,3 +36,17 @@ class ProductDetail:
     product: Product
     images: list[str] = field(default_factory=list)
     attributes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class Suggestion:
+    title: str
+    subtitle: str
+    place_id: str
+
+
+@dataclass
+class Place:
+    address: str
+    lat: float
+    lon: float

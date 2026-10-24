@@ -7,8 +7,8 @@ of docs/superpowers/specs/2026-10-24-blinkit-mcp-design.md.
 import math
 import re
 
-from .errors import UPSTREAM_CHANGED, BlinkitError
-from .models import Product, ProductDetail, SearchPage
+from .errors import NOT_FOUND, UPSTREAM_CHANGED, BlinkitError
+from .models import Place, Product, ProductDetail, SearchPage, Suggestion
 
 PRODUCT_CARD = "product_card_snippet_type_2"
 ATC_STRIP = "product_atc_strip"
@@ -147,3 +147,23 @@ def parse_product(data: dict) -> ProductDetail:
         merchant_id=_atc_merchant_id(atc),
     )
     return ProductDetail(product=product, images=images, attributes=attributes)
+
+
+def parse_suggestions(data: dict) -> list[Suggestion]:
+    """Parse GET /location/autoSuggest. No match gives an empty `ui_data`."""
+    out = []
+    for s in (data.get("ui_data") or {}).get("suggestions") or []:
+        place_id = (s.get("meta") or {}).get("place_id")
+        if place_id:
+            out.append(Suggestion(title=_text(s.get("title")) or "", subtitle=_text(s.get("subtitle")) or "", place_id=place_id))
+    return out
+
+
+def parse_place_info(data: dict) -> Place:
+    """Parse GET /location/info?place_id=... (lat/lng queries return no data)."""
+    coord = data.get("coordinate") or {}
+    lat, lon = coord.get("lat"), coord.get("lon")
+    if not lat or not lon:
+        raise BlinkitError(NOT_FOUND, "Blinkit returned no coordinates for this place")
+    address = (data.get("display_address") or {}).get("address_line") or ""
+    return Place(address=address, lat=float(lat), lon=float(lon))
